@@ -274,10 +274,12 @@ async function fetchMondayBoardsList(){
 async function fetchMondayItemsForBoard(boardId){
   const allItems = [];
   let cursor = null;
+  // Subitems são pedidos dentro do mesmo query — economiza chamadas API
+  const subitemsFragment = `subitems { id name state created_at updated_at column_values { id type text value column { id title } } }`;
   for(let i=0;i<20;i++){
     const q = cursor
-      ? `query { next_items_page(limit:500, cursor:"${cursor}"){ cursor items { id name state created_at updated_at column_values { id type text value column { id title } } } } }`
-      : `query { boards(ids:[${boardId}]){ items_page(limit:500){ cursor items { id name state created_at updated_at column_values { id type text value column { id title } } } } } }`;
+      ? `query { next_items_page(limit:200, cursor:"${cursor}"){ cursor items { id name state created_at updated_at column_values { id type text value column { id title } } ${subitemsFragment} } } }`
+      : `query { boards(ids:[${boardId}]){ items_page(limit:200){ cursor items { id name state created_at updated_at column_values { id type text value column { id title } } ${subitemsFragment} } } } }`;
     const data = await mondayQuery(q);
     let page;
     if(cursor) page = data.next_items_page;
@@ -382,6 +384,7 @@ function Sidebar({active,setActive,user,profile,onLogout}){
   const items = [
     {key:'dashboard',label:'Dashboard',icon:'📊'},
     {key:'overdue',label:'Em atraso',icon:'⚠️'},
+    {key:'completed',label:'Concluídas',icon:'✅'},
     {key:'team',label:'Por pessoa',icon:'👥'},
     {key:'boards',label:'Por área/quadro',icon:'📁'},
     {key:'config',label:'Configuração',icon:'⚙️'}
@@ -560,7 +563,7 @@ function Dashboard({items,boards,period,setPeriod,customStart,setCustomStart,cus
           <div class="kpi-value danger">${stats.overdue}</div>
           <div class="kpi-sub">Prazo já passou</div>
         </div>
-        <div class="kpi-card" onClick=${()=>setView('team')}>
+        <div class="kpi-card" onClick=${()=>setView('completed')}>
           <div class="kpi-label">Concluídas</div>
           <div class="kpi-value success">${stats.done}</div>
           <div class="kpi-sub">No período seleccionado</div>
@@ -586,7 +589,7 @@ function Dashboard({items,boards,period,setPeriod,customStart,setCustomStart,cus
           ` : html`
             <table class="data-table">
               <thead><tr>
-                <th>Tarefa</th><th>Responsável</th><th>Quadro</th><th>Prazo</th><th>Atraso</th><th></th>
+                <th></th><th>Nome</th><th>Tipo</th><th>Responsável</th><th>Quadro</th><th>Prazo</th><th>Atraso</th><th></th>
               </tr></thead>
               <tbody>
                 ${topOverdue.map(it=>{
@@ -594,7 +597,9 @@ function Dashboard({items,boards,period,setPeriod,customStart,setCustomStart,cus
                   const days = daysBetween(it.due_date,new Date());
                   return html`
                     <tr>
+                      <td>${it.item_type==='task' ? html`<span class="text-muted">↳</span>` : ''}</td>
                       <td><strong>${it.name}</strong></td>
+                      <td><span class=${'badge '+(it.item_type==='task'?'badge-info':'badge-grey')}>${it.item_type==='task'?'Tarefa':'Processo'}</span></td>
                       <td>${it.person_name || html`<span class="text-muted">—</span>`}</td>
                       <td><span class="badge badge-grey">${board?.name || '—'}</span></td>
                       <td>${fmtDate(it.due_date)}</td>
@@ -717,7 +722,7 @@ function OverdueView({items,boards,period,setPeriod,customStart,setCustomStart,c
           ` : html`
             <table class="data-table">
               <thead><tr>
-                <th>Tarefa</th><th>Responsável</th><th>Quadro</th><th>Estado</th><th>Prazo</th><th>Atraso</th><th></th>
+                <th></th><th>Nome</th><th>Tipo</th><th>Responsável</th><th>Quadro</th><th>Estado</th><th>Prazo</th><th>Atraso</th><th></th>
               </tr></thead>
               <tbody>
                 ${filtered.map(it=>{
@@ -725,7 +730,9 @@ function OverdueView({items,boards,period,setPeriod,customStart,setCustomStart,c
                   const days = daysBetween(it.due_date,new Date());
                   return html`
                     <tr>
+                      <td>${it.item_type==='task' ? html`<span class="text-muted">↳</span>` : ''}</td>
                       <td><strong>${it.name}</strong></td>
+                      <td><span class=${'badge '+(it.item_type==='task'?'badge-info':'badge-grey')}>${it.item_type==='task'?'Tarefa':'Processo'}</span></td>
                       <td>${it.person_name || html`<span class="text-muted">—</span>`}</td>
                       <td><span class="badge badge-grey">${board?.name || '—'}</span></td>
                       <td><span class="badge badge-info">${it.status_label || '—'}</span></td>
@@ -735,6 +742,84 @@ function OverdueView({items,boards,period,setPeriod,customStart,setCustomStart,c
                           ${days} dia${days===1?'':'s'}
                         </span>
                       </td>
+                      <td>${it.monday_url && html`<a href=${it.monday_url} target="_blank" class="text-link">Abrir →</a>`}</td>
+                    </tr>
+                  `;
+                })}
+              </tbody>
+            </table>
+          `}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ===========================================================================
+// COMPLETED VIEW
+// ===========================================================================
+function CompletedView({items,boards,period,setPeriod,customStart,setCustomStart,customEnd,setCustomEnd}){
+  const [personFilter,setPersonFilter] = useState('all');
+  const [boardFilter,setBoardFilter] = useState('all');
+
+  const filtered = useMemo(()=>{
+    let arr = filterByPeriod(items,period,customStart,customEnd).filter(i=>i.is_done);
+    if(personFilter!=='all') arr = arr.filter(i=>i.person_name===personFilter);
+    if(boardFilter!=='all') arr = arr.filter(i=>String(i.board_id)===boardFilter);
+    return arr.sort((a,b)=>new Date(b.completed_at||b.updated_at_monday||0)-new Date(a.completed_at||a.updated_at_monday||0));
+  },[items,period,customStart,customEnd,personFilter,boardFilter]);
+
+  const persons = useMemo(()=>{
+    const s = new Set();
+    items.filter(i=>i.is_done).forEach(i=>i.person_name && s.add(i.person_name));
+    return Array.from(s).sort();
+  },[items]);
+
+  return html`
+    <div>
+      <${PeriodFilter} period=${period} setPeriod=${setPeriod}
+        customStart=${customStart} setCustomStart=${setCustomStart}
+        customEnd=${customEnd} setCustomEnd=${setCustomEnd} />
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Concluídas (${filtered.length})</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <select onChange=${e=>setPersonFilter(e.target.value)} value=${personFilter}
+                    style="padding:6px 10px;border:1px solid var(--pa-border);border-radius:6px;font-size:13px">
+              <option value="all">Todas as pessoas</option>
+              ${persons.map(p=>html`<option value=${p}>${p}</option>`)}
+            </select>
+            <select onChange=${e=>setBoardFilter(e.target.value)} value=${boardFilter}
+                    style="padding:6px 10px;border:1px solid var(--pa-border);border-radius:6px;font-size:13px">
+              <option value="all">Todos os quadros</option>
+              ${boards.filter(b=>b.enabled).map(b=>html`<option value=${b.id}>${b.name}</option>`)}
+            </select>
+          </div>
+        </div>
+        <div class="card-body no-padding">
+          ${filtered.length===0 ? html`
+            <div class="empty-state">
+              <h3>Sem concluídas no período</h3>
+              <p>Não há nada marcado como concluído no período seleccionado.</p>
+            </div>
+          ` : html`
+            <table class="data-table">
+              <thead><tr>
+                <th></th><th>Nome</th><th>Tipo</th><th>Responsável</th><th>Quadro</th><th>Estado</th><th>Concluída em</th><th></th>
+              </tr></thead>
+              <tbody>
+                ${filtered.map(it=>{
+                  const board = boards.find(b=>b.id===it.board_id);
+                  return html`
+                    <tr>
+                      <td>${it.item_type==='task' ? html`<span class="text-muted">↳</span>` : ''}</td>
+                      <td><strong>${it.name}</strong></td>
+                      <td><span class=${'badge '+(it.item_type==='task'?'badge-info':'badge-grey')}>${it.item_type==='task'?'Tarefa':'Processo'}</span></td>
+                      <td>${it.person_name || html`<span class="text-muted">—</span>`}</td>
+                      <td><span class="badge badge-grey">${board?.name || '—'}</span></td>
+                      <td><span class="badge badge-success">${it.status_label || 'Concluído'}</span></td>
+                      <td>${fmtDate(it.completed_at || it.updated_at_monday)}</td>
                       <td>${it.monday_url && html`<a href=${it.monday_url} target="_blank" class="text-link">Abrir →</a>`}</td>
                     </tr>
                   `;
@@ -869,6 +954,10 @@ function ConfigView({onSyncDone}){
           status_column_id:existing?.status_column_id || guessColumn(b.columns,['status','estado','situação']),
           person_column_id:existing?.person_column_id || guessColumn(b.columns,['responsável','responsavel','person','people','assignee','dono']),
           date_column_id:existing?.date_column_id || guessColumn(b.columns,['prazo','data','due','date','deadline','vencimento']),
+          // Subelementos: por defeito assume os mesmos IDs do elemento; se a primeira sync detectar diferente, fica em null aqui e usa-se fallback
+          sub_status_column_id:existing?.sub_status_column_id || null,
+          sub_person_column_id:existing?.sub_person_column_id || null,
+          sub_date_column_id:existing?.sub_date_column_id || null,
           done_status_labels:existing?.done_status_labels || DONE_STATUS_DEFAULTS
         };
       });
@@ -898,6 +987,9 @@ function ConfigView({onSyncDone}){
           status_column_id:b.status_column_id,
           person_column_id:b.person_column_id,
           date_column_id:b.date_column_id,
+          sub_status_column_id:b.sub_status_column_id,
+          sub_person_column_id:b.sub_person_column_id,
+          sub_date_column_id:b.sub_date_column_id,
           done_status_labels:b.done_status_labels
         },{onConflict:'id'});
       }
@@ -930,13 +1022,47 @@ function ConfigView({onSyncDone}){
 
         await sb.from('monday_items').delete().eq('board_id',b.id);
 
-        const rows = items.map(it=>{
+        const rows = [];
+        // Auto-detectar colunas dos subelementos a partir do primeiro subitem encontrado, se não estiverem configuradas
+        let subStatusId = b.sub_status_column_id;
+        let subPersonId = b.sub_person_column_id;
+        let subDateId = b.sub_date_column_id;
+        if(!subStatusId || !subPersonId || !subDateId){
+          // Procurar primeiro subitem com colunas
+          const sample = items.find(it => it.subitems && it.subitems.length>0);
+          if(sample){
+            const subCols = (sample.subitems[0].column_values||[]).map(cv => ({
+              id:cv.id,
+              type:cv.type,
+              title:cv.column?.title || ''
+            }));
+            const subGuess = (keywords,types)=>{
+              for(const k of keywords){
+                const c = subCols.find(c=>c.title.toLowerCase().includes(k) && (!types || types.includes(c.type)));
+                if(c) return c.id;
+              }
+              return null;
+            };
+            if(!subStatusId) subStatusId = subGuess(['status','estado','situação'],['status','color']);
+            if(!subPersonId) subPersonId = subGuess(['responsável','responsavel','person','people','assignee','dono'],['people','person','multiple-person']);
+            if(!subDateId) subDateId = subGuess(['prazo','data','due','date','deadline','vencimento'],['date','timeline']);
+          }
+        }
+        const subConfig = {
+          status_column_id: subStatusId || b.status_column_id,
+          person_column_id: subPersonId || b.person_column_id,
+          date_column_id: subDateId || b.date_column_id,
+          done_status_labels: b.done_status_labels
+        };
+        items.forEach(it=>{
           const fields = extractItemFields(it,b);
-          return {
+          rows.push({
             id:Number(it.id),
             board_id:b.id,
             name:it.name,
             state:it.state,
+            item_type:'process',
+            parent_item_id:null,
             ...fields,
             monday_url:`https://${subdomain}.monday.com/boards/${b.id}/pulses/${it.id}`,
             raw_columns:it.column_values,
@@ -944,7 +1070,26 @@ function ConfigView({onSyncDone}){
             updated_at_monday:it.updated_at,
             completed_at:fields.is_done ? it.updated_at : null,
             synced_at:new Date().toISOString()
-          };
+          });
+          // Subitems = tasks (tarefas)
+          (it.subitems||[]).forEach(sub=>{
+            const subFields = extractItemFields(sub,subConfig);
+            rows.push({
+              id:Number(sub.id),
+              board_id:b.id,
+              name:sub.name,
+              state:sub.state,
+              item_type:'task',
+              parent_item_id:Number(it.id),
+              ...subFields,
+              monday_url:`https://${subdomain}.monday.com/boards/${b.id}/pulses/${sub.id}`,
+              raw_columns:sub.column_values,
+              created_at_monday:sub.created_at,
+              updated_at_monday:sub.updated_at,
+              completed_at:subFields.is_done ? sub.updated_at : null,
+              synced_at:new Date().toISOString()
+            });
+          });
         });
 
         for(let j=0;j<rows.length;j+=500){
@@ -953,7 +1098,13 @@ function ConfigView({onSyncDone}){
         }
         totalItems += rows.length;
 
-        await sb.from('monday_boards').update({last_synced_at:new Date().toISOString()}).eq('id',b.id);
+        // Gravar IDs auto-detectados (se foram detectados nesta sync)
+        await sb.from('monday_boards').update({
+          last_synced_at:new Date().toISOString(),
+          sub_status_column_id: subStatusId,
+          sub_person_column_id: subPersonId,
+          sub_date_column_id: subDateId
+        }).eq('id',b.id);
       }
 
       await sb.from('monday_sync_log').update({
@@ -1101,6 +1252,7 @@ function App(){
   const [period,setPeriod] = useState('all');
   const [customStart,setCustomStart] = useState('');
   const [customEnd,setCustomEnd] = useState('');
+  const [itemTypeFilter,setItemTypeFilter] = useState('all'); // 'all' | 'process' | 'task'
 
   useEffect(()=>{
     (async ()=>{
@@ -1147,10 +1299,17 @@ function App(){
   const titles = {
     dashboard:'Dashboard',
     overdue:'Tarefas em atraso',
+    completed:'Concluídas',
     team:'Por pessoa',
     boards:'Por área/quadro',
     config:'Configuração'
   };
+
+  // Filtrar por tipo de item (processo/tarefa/tudo) antes de passar para as views
+  const filteredItems = useMemo(()=>{
+    if(itemTypeFilter==='all') return items;
+    return items.filter(i => i.item_type === itemTypeFilter);
+  },[items,itemTypeFilter]);
 
   return html`
     <div class="app">
@@ -1160,6 +1319,11 @@ function App(){
           <div class="topbar-title">${titles[view]}</div>
           <div class="topbar-actions">
             ${view !== 'config' && html`
+              <div class="filters" style="margin:0;gap:4px">
+                <div class=${'filter-pill '+(itemTypeFilter==='all'?'active':'')} onClick=${()=>setItemTypeFilter('all')}>Tudo</div>
+                <div class=${'filter-pill '+(itemTypeFilter==='process'?'active':'')} onClick=${()=>setItemTypeFilter('process')}>Processos</div>
+                <div class=${'filter-pill '+(itemTypeFilter==='task'?'active':'')} onClick=${()=>setItemTypeFilter('task')}>Tarefas</div>
+              </div>
               <button class="btn btn-outline btn-sm" onClick=${loadData} disabled=${loading}>
                 ${loading ? html`<span class="spinner dark"></span>` : '↻'} Actualizar
               </button>
@@ -1170,20 +1334,24 @@ function App(){
           ${loading ? html`
             <div style="text-align:center;padding:80px"><div class="spinner dark" style="width:32px;height:32px"></div></div>
           ` : html`
-            ${view==='dashboard' && html`<${Dashboard} items=${items} boards=${boards}
+            ${view==='dashboard' && html`<${Dashboard} items=${filteredItems} boards=${boards}
               period=${period} setPeriod=${setPeriod}
               customStart=${customStart} setCustomStart=${setCustomStart}
               customEnd=${customEnd} setCustomEnd=${setCustomEnd}
               setView=${setView} />`}
-            ${view==='overdue' && html`<${OverdueView} items=${items} boards=${boards}
+            ${view==='overdue' && html`<${OverdueView} items=${filteredItems} boards=${boards}
               period=${period} setPeriod=${setPeriod}
               customStart=${customStart} setCustomStart=${setCustomStart}
               customEnd=${customEnd} setCustomEnd=${setCustomEnd} />`}
-            ${view==='team' && html`<${TeamView} items=${items}
+            ${view==='team' && html`<${TeamView} items=${filteredItems}
               period=${period} setPeriod=${setPeriod}
               customStart=${customStart} setCustomStart=${setCustomStart}
               customEnd=${customEnd} setCustomEnd=${setCustomEnd} />`}
-            ${view==='boards' && html`<${BoardsView} items=${items} boards=${boards}
+            ${view==='boards' && html`<${BoardsView} items=${filteredItems} boards=${boards}
+              period=${period} setPeriod=${setPeriod}
+              customStart=${customStart} setCustomStart=${setCustomStart}
+              customEnd=${customEnd} setCustomEnd=${setCustomEnd} />`}
+            ${view==='completed' && html`<${CompletedView} items=${filteredItems} boards=${boards}
               period=${period} setPeriod=${setPeriod}
               customStart=${customStart} setCustomStart=${setCustomStart}
               customEnd=${customEnd} setCustomEnd=${setCustomEnd} />`}
