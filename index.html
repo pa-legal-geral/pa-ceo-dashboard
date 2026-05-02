@@ -1006,6 +1006,9 @@ function ConfigView({onSyncDone}){
   const syncNow = async ()=>{
     setSyncing(true);
     let totalItems = 0;
+    let totalProcesses = 0;
+    let totalTasks = 0;
+    const diag = [];
     const enabled = savedBoards.filter(b=>b.enabled);
     if(enabled.length===0){
       showToast('Activa pelo menos um quadro antes de sincronizar','error');
@@ -1054,6 +1057,13 @@ function ConfigView({onSyncDone}){
           date_column_id: subDateId || b.date_column_id,
           done_status_labels: b.done_status_labels
         };
+        // [DIAG ETAPA 1] contadores por board
+        let apiSubitems = 0;
+        let processRows = 0;
+        let taskRows = 0;
+        let tasksWithDate = 0;
+        let tasksWithStatus = 0;
+        let tasksWithPerson = 0;
         items.forEach(it=>{
           const fields = extractItemFields(it,b);
           rows.push({
@@ -1071,9 +1081,15 @@ function ConfigView({onSyncDone}){
             completed_at:fields.is_done ? it.updated_at : null,
             synced_at:new Date().toISOString()
           });
+          processRows++;
           // Subitems = tasks (tarefas)
-          (it.subitems||[]).forEach(sub=>{
+          const subs = it.subitems||[];
+          apiSubitems += subs.length;
+          subs.forEach(sub=>{
             const subFields = extractItemFields(sub,subConfig);
+            if(subFields.due_date) tasksWithDate++;
+            if(subFields.status_label) tasksWithStatus++;
+            if(subFields.person_name) tasksWithPerson++;
             rows.push({
               id:Number(sub.id),
               board_id:b.id,
@@ -1089,14 +1105,45 @@ function ConfigView({onSyncDone}){
               completed_at:subFields.is_done ? sub.updated_at : null,
               synced_at:new Date().toISOString()
             });
+            taskRows++;
           });
         });
 
+        let upsertErrorMsg = null;
+        let upsertedRows = 0;
         for(let j=0;j<rows.length;j+=500){
           const chunk = rows.slice(j,j+500);
-          await sb.from('monday_items').upsert(chunk,{onConflict:'id'});
+          const {error:upErr} = await sb.from('monday_items').upsert(chunk,{onConflict:'id'});
+          if(upErr){
+            upsertErrorMsg = upErr.message || JSON.stringify(upErr);
+            console.error(`[SYNC][${b.name}] upsert chunk falhou`, upErr, chunk.slice(0,2));
+            break;
+          }
+          upsertedRows += chunk.length;
         }
-        totalItems += rows.length;
+        if(upsertErrorMsg){
+          showToast(`Erro a inserir em "${b.name}": ${upsertErrorMsg}`,'error');
+        }
+        totalItems += upsertedRows;
+        totalProcesses += processRows;
+        totalTasks += taskRows;
+
+        const boardDiag = {
+          board:b.name,
+          itemsApi:items.length,
+          subitemsApi:apiSubitems,
+          processRows,
+          taskRows,
+          upsertedRows,
+          subStatusId, subPersonId, subDateId,
+          subFallbackStatus: !subStatusId,
+          subFallbackPerson: !subPersonId,
+          subFallbackDate: !subDateId,
+          tasksWithDate, tasksWithStatus, tasksWithPerson,
+          upsertError: upsertErrorMsg
+        };
+        diag.push(boardDiag);
+        console.log(`[SYNC][${b.name}]`, boardDiag);
 
         // Gravar IDs auto-detectados (se foram detectados nesta sync)
         await sb.from('monday_boards').update({
@@ -1114,7 +1161,8 @@ function ConfigView({onSyncDone}){
         items_synced:totalItems
       }).eq('id',logRow.id);
 
-      showToast(`Sincronização concluída — ${totalItems} items de ${enabled.length} quadros`,'success');
+      console.log('[SYNC] resumo final', {totalItems,totalProcesses,totalTasks,diag});
+      showToast(`Sincronização concluída — ${totalProcesses} processos, ${totalTasks} tarefas em ${enabled.length} quadros`,'success');
       const {data:fresh} = await sb.from('monday_boards').select('*').order('name');
       setSavedBoards(fresh || []);
       onSyncDone();
