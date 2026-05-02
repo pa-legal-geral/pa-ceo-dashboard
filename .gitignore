@@ -30,7 +30,9 @@ $RECYCLE.BIN/
 .settings/
 
 # Claude Code
-.claude/
+.claude/settings.local.json
+.claude/cache/
+.claude/worktrees/
 
 # Node
 node_modules/
