@@ -239,6 +239,57 @@ function showToast(message,type='info'){
 }
 
 // ===========================================================================
+// Normalização de nomes de pessoas
+// ===========================================================================
+const PERSON_ALIASES_KEY = 'pa_person_aliases';
+
+function capitalizeWord(s){
+  if(!s) return s;
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+}
+
+function autoNormalizePart(s){
+  s = (s||'').trim();
+  if(!s) return s;
+  if(s.includes('@')){
+    const userPart = s.split('@')[0];
+    return userPart.split(/[._\-]+/).filter(Boolean).map(capitalizeWord).join(' ');
+  }
+  return s.split(/\s+/).filter(Boolean).map(capitalizeWord).join(' ');
+}
+
+function loadPersonAliases(){
+  try{ return JSON.parse(localStorage.getItem(PERSON_ALIASES_KEY)||'{}'); }
+  catch{ return {}; }
+}
+
+function savePersonAliasesMap(map){
+  localStorage.setItem(PERSON_ALIASES_KEY, JSON.stringify(map));
+}
+
+function splitRawPersons(raw){
+  if(!raw) return [];
+  return String(raw).split(',').map(s=>s.trim()).filter(Boolean);
+}
+
+function resolvePersonPart(rawPart, aliasMap){
+  if(!rawPart) return null;
+  const rawKey = rawPart.toLowerCase().trim();
+  if(aliasMap && aliasMap[rawKey]) return aliasMap[rawKey];
+  const auto = autoNormalizePart(rawPart);
+  const autoKey = auto.toLowerCase().trim();
+  if(aliasMap && aliasMap[autoKey]) return aliasMap[autoKey];
+  return auto;
+}
+
+function displayPerson(raw, aliasMap){
+  const parts = splitRawPersons(raw);
+  if(parts.length === 0) return null;
+  const canonical = parts.map(p => resolvePersonPart(p, aliasMap));
+  return [...new Set(canonical)].join(', ');
+}
+
+// ===========================================================================
 // Monday API
 // ===========================================================================
 async function mondayQuery(query,variables={}){
@@ -520,7 +571,7 @@ function Dashboard({items,boards,period,setPeriod,customStart,setCustomStart,cus
     const done = filtered.filter(i=>i.is_done);
     const byPerson = {};
     filtered.forEach(i=>{
-      const p = i.person_name || 'Sem responsável';
+      const p = i.person_display || 'Sem responsável';
       if(!byPerson[p]) byPerson[p]={total:0,done:0,overdue:0,onTime:0};
       byPerson[p].total++;
       if(i.is_done) byPerson[p].done++;
@@ -600,7 +651,7 @@ function Dashboard({items,boards,period,setPeriod,customStart,setCustomStart,cus
                       <td>${it.item_type==='task' ? html`<span class="text-muted">↳</span>` : ''}</td>
                       <td><strong>${it.name}</strong></td>
                       <td><span class=${'badge '+(it.item_type==='task'?'badge-info':'badge-grey')}>${it.item_type==='task'?'Tarefa':'Processo'}</span></td>
-                      <td>${it.person_name || html`<span class="text-muted">—</span>`}</td>
+                      <td>${it.person_display || html`<span class="text-muted">—</span>`}</td>
                       <td><span class="badge badge-grey">${board?.name || '—'}</span></td>
                       <td>${fmtDate(it.due_date)}</td>
                       <td><span class="badge badge-danger">${days} dias</span></td>
@@ -636,7 +687,7 @@ function TeamView({items,period,setPeriod,customStart,setCustomStart,customEnd,s
   const byPerson = useMemo(()=>{
     const obj = {};
     filtered.forEach(i=>{
-      const p = i.person_name || 'Sem responsável';
+      const p = i.person_display || 'Sem responsável';
       if(!obj[p]) obj[p]={total:0,done:0,overdue:0,onTime:0};
       obj[p].total++;
       if(i.is_done) obj[p].done++;
@@ -680,14 +731,14 @@ function OverdueView({items,boards,period,setPeriod,customStart,setCustomStart,c
 
   const filtered = useMemo(()=>{
     let arr = filterByPeriod(items,period,customStart,customEnd).filter(i=>i.is_overdue);
-    if(personFilter!=='all') arr = arr.filter(i=>i.person_name===personFilter);
+    if(personFilter!=='all') arr = arr.filter(i=>i.person_display===personFilter);
     if(boardFilter!=='all') arr = arr.filter(i=>String(i.board_id)===boardFilter);
     return arr.sort((a,b)=>daysBetween(b.due_date,new Date())-daysBetween(a.due_date,new Date()));
   },[items,period,customStart,customEnd,personFilter,boardFilter]);
 
   const persons = useMemo(()=>{
     const s = new Set();
-    items.filter(i=>i.is_overdue).forEach(i=>i.person_name && s.add(i.person_name));
+    items.filter(i=>i.is_overdue).forEach(i=>i.person_display && s.add(i.person_display));
     return Array.from(s).sort();
   },[items]);
 
@@ -733,7 +784,7 @@ function OverdueView({items,boards,period,setPeriod,customStart,setCustomStart,c
                       <td>${it.item_type==='task' ? html`<span class="text-muted">↳</span>` : ''}</td>
                       <td><strong>${it.name}</strong></td>
                       <td><span class=${'badge '+(it.item_type==='task'?'badge-info':'badge-grey')}>${it.item_type==='task'?'Tarefa':'Processo'}</span></td>
-                      <td>${it.person_name || html`<span class="text-muted">—</span>`}</td>
+                      <td>${it.person_display || html`<span class="text-muted">—</span>`}</td>
                       <td><span class="badge badge-grey">${board?.name || '—'}</span></td>
                       <td><span class="badge badge-info">${it.status_label || '—'}</span></td>
                       <td>${fmtDate(it.due_date)}</td>
@@ -764,14 +815,14 @@ function CompletedView({items,boards,period,setPeriod,customStart,setCustomStart
 
   const filtered = useMemo(()=>{
     let arr = filterByPeriod(items,period,customStart,customEnd).filter(i=>i.is_done);
-    if(personFilter!=='all') arr = arr.filter(i=>i.person_name===personFilter);
+    if(personFilter!=='all') arr = arr.filter(i=>i.person_display===personFilter);
     if(boardFilter!=='all') arr = arr.filter(i=>String(i.board_id)===boardFilter);
     return arr.sort((a,b)=>new Date(b.completed_at||b.updated_at_monday||0)-new Date(a.completed_at||a.updated_at_monday||0));
   },[items,period,customStart,customEnd,personFilter,boardFilter]);
 
   const persons = useMemo(()=>{
     const s = new Set();
-    items.filter(i=>i.is_done).forEach(i=>i.person_name && s.add(i.person_name));
+    items.filter(i=>i.is_done).forEach(i=>i.person_display && s.add(i.person_display));
     return Array.from(s).sort();
   },[items]);
 
@@ -816,7 +867,7 @@ function CompletedView({items,boards,period,setPeriod,customStart,setCustomStart
                       <td>${it.item_type==='task' ? html`<span class="text-muted">↳</span>` : ''}</td>
                       <td><strong>${it.name}</strong></td>
                       <td><span class=${'badge '+(it.item_type==='task'?'badge-info':'badge-grey')}>${it.item_type==='task'?'Tarefa':'Processo'}</span></td>
-                      <td>${it.person_name || html`<span class="text-muted">—</span>`}</td>
+                      <td>${it.person_display || html`<span class="text-muted">—</span>`}</td>
                       <td><span class="badge badge-grey">${board?.name || '—'}</span></td>
                       <td><span class="badge badge-success">${it.status_label || 'Concluído'}</span></td>
                       <td>${fmtDate(it.completed_at || it.updated_at_monday)}</td>
@@ -909,9 +960,122 @@ function BoardsView({items,boards,period,setPeriod,customStart,setCustomStart,cu
 }
 
 // ===========================================================================
+// PERSON ALIAS MANAGER — unificação de variações do mesmo nome
+// ===========================================================================
+function PersonAliasManager({items,aliases,setAliases}){
+  const [draft,setDraft] = useState(aliases || {});
+  const [filter,setFilter] = useState('');
+
+  useEffect(()=>{ setDraft(aliases || {}); },[aliases]);
+
+  // Recolher todas as variações distintas (já separadas por vírgula) e contagens
+  const variations = useMemo(()=>{
+    const counts = {};
+    (items||[]).forEach(i=>{
+      splitRawPersons(i.person_name).forEach(p=>{
+        counts[p] = (counts[p]||0) + 1;
+      });
+    });
+    return Object.entries(counts)
+      .map(([raw,count])=>({raw,count,auto:autoNormalizePart(raw)}))
+      .sort((a,b)=> a.auto.localeCompare(b.auto,'pt') || a.raw.localeCompare(b.raw,'pt'));
+  },[items]);
+
+  const filtered = useMemo(()=>{
+    if(!filter.trim()) return variations;
+    const f = filter.toLowerCase();
+    return variations.filter(v => v.raw.toLowerCase().includes(f) || v.auto.toLowerCase().includes(f));
+  },[variations,filter]);
+
+  const onChangeAlias = (key,value)=>{
+    setDraft(d => ({...d, [key]: value}));
+  };
+
+  const save = ()=>{
+    const cleaned = {};
+    Object.entries(draft).forEach(([k,v])=>{ if(v && String(v).trim()) cleaned[k] = String(v).trim(); });
+    setAliases(cleaned);
+    showToast('Aliases guardados','success');
+  };
+
+  const autoFillEmpty = ()=>{
+    const next = {...draft};
+    variations.forEach(v=>{
+      const key = v.raw.toLowerCase();
+      if(!next[key]) next[key] = v.auto;
+    });
+    setDraft(next);
+  };
+
+  // Pré-visualização: para cada variação, qual é o nome final que será mostrado
+  const preview = (raw)=>{
+    const key = raw.toLowerCase();
+    const tempMap = {...draft};
+    Object.keys(tempMap).forEach(k=>{ if(!tempMap[k] || !String(tempMap[k]).trim()) delete tempMap[k]; });
+    return resolvePersonPart(raw, tempMap);
+  };
+
+  return html`
+    <div class="card">
+      <div class="card-header">
+        <div class="card-title">Unificação de nomes</div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-outline btn-sm" onClick=${autoFillEmpty} disabled=${variations.length===0}>
+            Preencher em branco com auto-normalizado
+          </button>
+          <button class="btn btn-primary btn-sm" onClick=${save}>💾 Guardar aliases</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <p class="text-muted" style="margin-bottom:12px;font-size:13px">
+          Cada linha é uma variação de nome encontrada nas tarefas. Define o "Nome canónico" para
+          juntar variações da mesma pessoa. Em branco = usa o auto-normalizado (extrai nome a partir
+          de email e capitaliza). Variações com o mesmo nome canónico passam a contar como a mesma pessoa.
+        </p>
+        <input type="text" placeholder="Filtrar por nome ou email..." value=${filter}
+          onInput=${e=>setFilter(e.target.value)}
+          style="width:100%;padding:8px 12px;border:1.5px solid var(--pa-grey-light);border-radius:8px;margin-bottom:12px" />
+
+        ${variations.length===0 ? html`
+          <div class="empty-state" style="padding:32px">
+            <p>Sem dados de pessoas. Sincroniza primeiro os quadros para detectar variações.</p>
+          </div>
+        ` : html`
+          <table class="data-table">
+            <thead><tr>
+              <th>Variação detectada</th>
+              <th class="text-right">Tarefas</th>
+              <th>Nome canónico (override)</th>
+              <th>Vai aparecer como</th>
+            </tr></thead>
+            <tbody>
+              ${filtered.map(v=>{
+                const key = v.raw.toLowerCase();
+                return html`
+                  <tr>
+                    <td><span class="font-mono" style="font-size:12px">${v.raw}</span></td>
+                    <td class="text-right">${v.count}</td>
+                    <td>
+                      <input type="text" placeholder=${v.auto} value=${draft[key]||''}
+                        onInput=${e=>onChangeAlias(key,e.target.value)}
+                        style="width:100%;padding:6px 10px;border:1px solid var(--pa-border);border-radius:6px;font-size:13px" />
+                    </td>
+                    <td><strong>${preview(v.raw)}</strong></td>
+                  </tr>
+                `;
+              })}
+            </tbody>
+          </table>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+// ===========================================================================
 // CONFIG VIEW
 // ===========================================================================
-function ConfigView({onSyncDone}){
+function ConfigView({onSyncDone,items,aliases,setAliases}){
   const [boards,setBoards] = useState([]);
   const [savedBoards,setSavedBoards] = useState([]);
   const [loading,setLoading] = useState(false);
@@ -1272,6 +1436,8 @@ function ConfigView({onSyncDone}){
         </div>
       </div>
 
+      <${PersonAliasManager} items=${items} aliases=${aliases} setAliases=${setAliases} />
+
       <div class="card">
         <div class="card-header"><div class="card-title">Configuração geral</div></div>
         <div class="card-body">
@@ -1301,6 +1467,7 @@ function App(){
   const [customStart,setCustomStart] = useState('');
   const [customEnd,setCustomEnd] = useState('');
   const [itemTypeFilter,setItemTypeFilter] = useState('all'); // 'all' | 'process' | 'task'
+  const [personAliases,setPersonAliases] = useState(loadPersonAliases());
 
   useEffect(()=>{
     (async ()=>{
@@ -1353,11 +1520,16 @@ function App(){
     config:'Configuração'
   };
 
+  // Enriquecer items com nome de pessoa normalizado (resolve emails + aliases)
+  const itemsNormalized = useMemo(()=>
+    items.map(i => ({...i, person_display: displayPerson(i.person_name, personAliases)})),
+  [items, personAliases]);
+
   // Filtrar por tipo de item (processo/tarefa/tudo) antes de passar para as views
   const filteredItems = useMemo(()=>{
-    if(itemTypeFilter==='all') return items;
-    return items.filter(i => i.item_type === itemTypeFilter);
-  },[items,itemTypeFilter]);
+    if(itemTypeFilter==='all') return itemsNormalized;
+    return itemsNormalized.filter(i => i.item_type === itemTypeFilter);
+  },[itemsNormalized,itemTypeFilter]);
 
   return html`
     <div class="app">
@@ -1403,7 +1575,10 @@ function App(){
               period=${period} setPeriod=${setPeriod}
               customStart=${customStart} setCustomStart=${setCustomStart}
               customEnd=${customEnd} setCustomEnd=${setCustomEnd} />`}
-            ${view==='config' && html`<${ConfigView} onSyncDone=${loadData} />`}
+            ${view==='config' && html`<${ConfigView} onSyncDone=${loadData}
+              items=${itemsNormalized}
+              aliases=${personAliases}
+              setAliases=${(m)=>{savePersonAliasesMap(m);setPersonAliases(m);}} />`}
           `}
         </div>
       </main>
